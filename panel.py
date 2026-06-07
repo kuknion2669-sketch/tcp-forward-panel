@@ -127,13 +127,9 @@ def reload_haproxy():
         pass
     cfg = "\n".join(lines) + "\n"
     with open("/etc/haproxy/haproxy.cfg", "w") as f: f.write(cfg)
-    import os as _hap_os, subprocess as _hap_sp
+    import subprocess as _hap_sp
     try:
-        if _hap_os.path.exists("/run/haproxy.pid"):
-            pid = open("/run/haproxy.pid").read().strip()
-            _hap_sp.run(f"haproxy -f /etc/haproxy/haproxy.cfg -p /run/haproxy.pid -sf {pid}", shell=True, capture_output=True)
-        else:
-            _hap_sp.run("haproxy -f /etc/haproxy/haproxy.cfg -p /run/haproxy.pid -D", shell=True, capture_output=True)
+        _hap_sp.run("systemctl restart haproxy", shell=True, capture_output=True, timeout=10)
     except: pass
 
 def ensure_iptables_rules(p):
@@ -292,6 +288,7 @@ def update_used():
                 changed = True
         HAPROXY_LAST[p] = c
     if changed: save_data(data)
+    save_haproxy_last()
     record_traffic()
     # Auto-disable quota-exhausted nodes via HAProxy socket
     try:
@@ -310,6 +307,30 @@ def update_used():
     except:
         pass
 
+def save_haproxy_last():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('INSERT OR REPLACE INTO config VALUES (?,?)', ('haproxy_last', json.dumps(HAPROXY_LAST)))
+        conn.commit()
+        conn.close()
+    except:
+        pass
+
+def load_haproxy_last():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('SELECT value FROM config WHERE key=?', ('haproxy_last',))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            loaded = json.loads(row[0])
+            HAPROXY_LAST.update(loaded)
+            logging.info(f"Loaded HAPROXY_LAST with {len(loaded)} entries from DB")
+    except:
+        pass
+
 def recover_all():
     try:
         import sqlite3 as _s
@@ -318,6 +339,8 @@ def recover_all():
         _d.close()
     except:
         pass
+    load_haproxy_last()
+
 init_db()
 recover_all()
 
@@ -633,6 +656,7 @@ def reset_quota(idx):
         global HAPROXY_LAST
         if i['local'] in HAPROXY_LAST:
             del HAPROXY_LAST[i['local']]
+        save_haproxy_last()
         if not is_running(i['local']) and not is_expired(i.get('expire','')):
             start_forward(i['local'], i['ip'], i['port'], i['expire'])
     return redirect(request.referrer or '/')
